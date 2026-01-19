@@ -2,7 +2,6 @@
 
 # =========================================================
 # Multi-Protocol Manager V3.1 (Fixed for Xray v26+)
-# Github: https://github.com/RaylenZed/3-protocols-manager
 # =========================================================
 
 # --- 颜色定义 ---
@@ -26,7 +25,7 @@ check_root() {
 
 install_tools() {
     if ! command -v jq &>/dev/null || ! command -v qrencode &>/dev/null; then
-        echo -e "${BLUE}正在安装必要工具 (wget, curl, jq, qrencode)...${NC}"
+        echo -e "${BLUE}正在安装必要工具...${NC}"
         if command -v apt &>/dev/null; then
             apt update -y && apt install -y wget curl unzip vim jq qrencode openssl socat
         elif command -v yum &>/dev/null; then
@@ -49,7 +48,7 @@ check_status() {
     fi
 }
 
-# --- 1. Reality 管理 ---
+# --- 1. Reality 管理 (核心修复部分) ---
 
 install_reality() {
     echo -e "${BLUE}>>> 安装/重置 Xray Reality...${NC}"
@@ -61,27 +60,33 @@ install_reality() {
     [[ -z "$SNI" ]] && SNI="griffithobservatory.org"
 
     echo -e "${YELLOW}正在生成密钥...${NC}"
+    
+    # 获取原始输出
     KEYS_RAW=$($XRAY_BIN x25519)
     
-    # 兼容性处理：尝试获取 PrivateKey
+    # 尝试匹配 Private Key (兼容 PrivateKey: 和 Private Key:)
     PK=$(echo "$KEYS_RAW" | grep -i "Private" | awk -F: '{print $NF}' | awk '{print $1}')
     
-    # 兼容性处理：尝试获取 PublicKey (新版 Xray 可能显示为 Password)
+    # 尝试匹配 Public Key (兼容 Public Key: 和 Password:)
     PUB=$(echo "$KEYS_RAW" | grep -i "Public" | awk -F: '{print $NF}' | awk '{print $1}')
+    
+    # 如果没找到 Public，尝试找 Password (针对 Xray v26+)
     if [[ -z "$PUB" ]]; then
         PUB=$(echo "$KEYS_RAW" | grep -i "Password" | awk -F: '{print $NF}' | awk '{print $1}')
     fi
 
-    # 如果自动获取失败，回退到手动输入
+    # 如果还是失败，进入手动模式
     if [[ -z "$PK" || -z "$PUB" ]]; then
-        echo -e "${RED}自动抓取密钥失败，进入手动模式。${NC}"
-        echo -e "$KEYS_RAW"
+        echo -e "${RED}自动抓取密钥失败 (可能是Xray版本输出格式变更)。${NC}"
+        echo -e "当前输出内容:\n$KEYS_RAW"
+        echo -e "${YELLOW}请根据上方内容手动复制粘贴:${NC}"
         read -p "请输入 PrivateKey: " PK
         read -p "请输入 Public Key (或 Password): " PUB
     fi
 
+    # 最终检查
     if [[ -z "$PK" || -z "$PUB" ]]; then
-        echo -e "${RED}错误：未能获取有效密钥。${NC}"
+        echo -e "${RED}错误：未能获取有效密钥，停止安装。${NC}"
         return
     fi
     
@@ -123,42 +128,58 @@ install_reality() {
   ]
 }
 EOF
+    # 保存公钥到文件以便后续查看
     echo "$PUB" > /usr/local/etc/xray/public.key
+
     systemctl restart xray
     echo -e "${GREEN}Reality 安装完成！${NC}"
     view_reality
 }
 
 view_reality() {
-    if [[ ! -f $XRAY_CONF ]]; then echo -e "${RED}未找到配置${NC}"; return; fi
+    if [[ ! -f $XRAY_CONF ]]; then echo -e "${RED}未找到配置文件${NC}"; return; fi
+    
     IP=$(get_ip)
     UUID=$(jq -r '.inbounds[0].settings.clients[0].id' $XRAY_CONF)
     SNI=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' $XRAY_CONF)
     SID=$(jq -r '.inbounds[0].streamSettings.realitySettings.shortIds[0]' $XRAY_CONF)
+    
+    # 尝试读取保存的公钥
     if [[ -f /usr/local/etc/xray/public.key ]]; then
         PUB=$(cat /usr/local/etc/xray/public.key)
     else
-        PUB="未找到文件"
+        PUB="未找到公钥文件，请重置"
     fi
+    
     LINK="vless://${UUID}@${IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUB}&sid=${SID}&type=tcp&headerType=none#Reality_Vision"
-    echo -e "\n${YELLOW}=== Reality ===${NC}"
-    echo -e "SNI: $SNI\nUUID: $UUID\nPublic Key: $PUB\nShortID: $SID"
+    
+    echo -e "\n${YELLOW}=== Reality 配置信息 ===${NC}"
+    echo -e "SNI: $SNI"
+    echo -e "UUID: $UUID"
+    echo -e "Public Key: $PUB"
+    echo -e "ShortID: $SID"
     echo -e "链接: $LINK"
+    echo -e "\n${YELLOW}二维码:${NC}"
     qrencode -t ANSIUTF8 "$LINK"
 }
 
 manage_reality_menu() {
-    echo -e "\n1. 查看配置 2. 重启 3. 停止 4. 日志"
-    read -p "选择: " OPT
+    echo -e "\n${BLUE}--- Reality 管理 ---${NC}"
+    echo "1. 查看配置/二维码"
+    echo "2. 重启服务"
+    echo "3. 停止服务"
+    echo "4. 查看日志"
+    read -p "请选择: " OPT
     case $OPT in
         1) view_reality ;;
         2) systemctl restart xray && echo "已重启" ;;
         3) systemctl stop xray && echo "已停止" ;;
         4) journalctl -u xray -n 20 --no-pager ;;
+        *) echo "无效选择" ;;
     esac
 }
 
-# --- 2. Hysteria 2 ---
+# --- 2. Hysteria 2 管理 ---
 
 install_hy2() {
     echo -e "${BLUE}>>> 安装 Hysteria 2...${NC}"
@@ -171,9 +192,11 @@ install_hy2() {
     LATEST=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | grep "tag_name" | cut -d '"' -f 4)
     wget -O /usr/local/bin/hysteria_server "https://github.com/apernet/hysteria/releases/download/${LATEST}/hysteria-linux-${HY_ARCH}"
     chmod +x /usr/local/bin/hysteria_server
+    
     mkdir -p /etc/hysteria
     openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt -days 3650 -subj "/CN=bing.com" 2>/dev/null
     PASS=$(openssl rand -base64 16)
+    
     cat > $HY2_CONF <<EOF
 listen: :443
 tls:
@@ -184,6 +207,7 @@ auth:
   password: $PASS
 ignoreClientBandwidth: false
 EOF
+    
     cat > /etc/systemd/system/hysteria-server.service <<EOF
 [Unit]
 Description=Hysteria 2 Server
@@ -209,23 +233,33 @@ view_hy2() {
     IP=$(get_ip)
     PASS=$(grep "password:" $HY2_CONF | awk '{print $2}')
     LINK="hysteria2://${PASS}@${IP}:443?insecure=1&sni=bing.com#Hysteria2"
-    echo -e "\n${YELLOW}=== Hysteria 2 ===${NC}"
-    echo -e "密码: $PASS\n链接: $LINK"
+    
+    echo -e "\n${YELLOW}=== Hysteria 2 配置信息 ===${NC}"
+    echo -e "密码: $PASS"
+    echo -e "端口: 443 (UDP)"
+    echo -e "SNI: bing.com"
+    echo -e "链接: $LINK"
+    echo -e "\n${YELLOW}二维码:${NC}"
     qrencode -t ANSIUTF8 "$LINK"
 }
 
 manage_hy2_menu() {
-    echo -e "\n1. 查看配置 2. 重启 3. 停止 4. 日志"
-    read -p "选择: " OPT
+    echo -e "\n${BLUE}--- Hysteria 2 管理 ---${NC}"
+    echo "1. 查看配置/二维码"
+    echo "2. 重启服务"
+    echo "3. 停止服务"
+    echo "4. 查看日志"
+    read -p "请选择: " OPT
     case $OPT in
         1) view_hy2 ;;
         2) systemctl restart hysteria-server && echo "已重启" ;;
         3) systemctl stop hysteria-server && echo "已停止" ;;
         4) journalctl -u hysteria-server -n 20 --no-pager ;;
+        *) echo "无效选择" ;;
     esac
 }
 
-# --- 3. Snell ---
+# --- 3. Snell 管理 ---
 
 install_snell() {
     echo -e "${BLUE}>>> 安装 Snell v5...${NC}"
@@ -239,16 +273,20 @@ install_snell() {
     unzip -o snell.zip -d /usr/local/bin
     rm snell.zip
     chmod +x /usr/local/bin/snell-server
+    
     mkdir -p /etc/snell
     PSK=$(openssl rand -base64 20 | tr -dc 'a-zA-Z0-9')
+    
     cat > $SNELL_CONF <<EOF
 [snell-server]
 listen = 0.0.0.0:11807
 psk = $PSK
 ipv6 = false
 EOF
+
     GROUP="nobody"
     grep -q "nogroup" /etc/group && GROUP="nogroup"
+
     cat > /lib/systemd/system/snell.service <<EOF
 [Unit]
 Description=Snell Proxy Service
@@ -277,61 +315,81 @@ view_snell() {
     if [[ ! -f $SNELL_CONF ]]; then echo -e "${RED}未找到配置${NC}"; return; fi
     IP=$(get_ip)
     PSK=$(grep "psk =" $SNELL_CONF | awk -F'= ' '{print $2}')
-    echo -e "\n${YELLOW}=== Snell ===${NC}"
+    CONF_LINE="Proxy = snell, ${IP}, 11807, psk=${PSK}, version=5, tfo=true"
+    
+    echo -e "\n${YELLOW}=== Snell 配置信息 ===${NC}"
     echo -e "PSK: $PSK"
-    echo -e "Surge: Proxy = snell, ${IP}, 11807, psk=${PSK}, version=5, tfo=true"
+    echo -e "Surge 配置行:\n$CONF_LINE"
+    echo -e "(Snell 协议暂无通用二维码标准)"
 }
 
 manage_snell_menu() {
-    echo -e "\n1. 查看配置 2. 重启 3. 停止 4. 日志"
-    read -p "选择: " OPT
+    echo -e "\n${BLUE}--- Snell 管理 ---${NC}"
+    echo "1. 查看配置"
+    echo "2. 重启服务"
+    echo "3. 停止服务"
+    echo "4. 查看日志"
+    read -p "请选择: " OPT
     case $OPT in
         1) view_snell ;;
         2) systemctl restart snell && echo "已重启" ;;
         3) systemctl stop snell && echo "已停止" ;;
         4) journalctl -u snell -n 20 --no-pager ;;
+        *) echo "无效选择" ;;
     esac
 }
 
-# --- BBR ---
+# --- 4. BBR 管理 ---
 
 enable_bbr() {
+    echo -e "${BLUE}>>> 开启 BBR 加速...${NC}"
     if grep -q "bbr" /etc/sysctl.conf; then
-        echo -e "${GREEN}BBR 已开启${NC}"
+        echo -e "${GREEN}BBR 似乎已经开启，正在刷新...${NC}"
     else
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-        sysctl -p
-        echo -e "${GREEN}BBR 已开启${NC}"
     fi
+    sysctl -p
+    RESULT=$(sysctl net.ipv4.tcp_congestion_control)
+    echo -e "当前状态: ${GREEN}$RESULT${NC}"
 }
 
-# --- Main ---
+# --- 主菜单 ---
 
+main_menu() {
+    while true; do
+        clear
+        echo -e "${BLUE}=====================================${NC}"
+        echo -e "   全能协议管理脚本 V3.1 (Fix Xray v26)"
+        echo -e "${BLUE}=====================================${NC}"
+        echo -e "1. 安装/重置 Reality (TCP 443)  [$(check_status xray)]"
+        echo -e "2. 安装/重置 Hysteria2 (UDP 443)[$(check_status hysteria-server)]"
+        echo -e "3. 安装/重置 Snell v5 (11807)   [$(check_status snell)]"
+        echo -e "-------------------------------------"
+        echo -e "4. 管理 Reality (查看配置/二维码)"
+        echo -e "5. 管理 Hysteria2"
+        echo -e "6. 管理 Snell"
+        echo -e "-------------------------------------"
+        echo -e "7. 开启 BBR 加速"
+        echo -e "0. 退出脚本"
+        echo -e "${BLUE}=====================================${NC}"
+        read -p "请输入选项: " CHOICE
+        
+        case $CHOICE in
+            1) install_reality; read -p "按回车继续..." ;;
+            2) install_hy2; read -p "按回车继续..." ;;
+            3) install_snell; read -p "按回车继续..." ;;
+            4) manage_reality_menu; read -p "按回车继续..." ;;
+            5) manage_hy2_menu; read -p "按回车继续..." ;;
+            6) manage_snell_menu; read -p "按回车继续..." ;;
+            7) enable_bbr; read -p "按回车继续..." ;;
+            0) exit 0 ;;
+            *) echo "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
+# --- 入口 ---
 check_root
 install_tools
-while true; do
-    clear
-    echo -e "${BLUE}=== VPS All-in-One Manager ===${NC}"
-    echo "1. 安装/重置 Reality (TCP 443)"
-    echo "2. 安装/重置 Hysteria2 (UDP 443)"
-    echo "3. 安装/重置 Snell v5 (11807)"
-    echo "----------------------------"
-    echo "4. 管理 Reality"
-    echo "5. 管理 Hysteria2"
-    echo "6. 管理 Snell"
-    echo "----------------------------"
-    echo "7. 开启 BBR"
-    echo "0. 退出"
-    read -p "选择: " C
-    case $C in
-        1) install_reality; read -p "..." ;;
-        2) install_hy2; read -p "..." ;;
-        3) install_snell; read -p "..." ;;
-        4) manage_reality_menu; read -p "..." ;;
-        5) manage_hy2_menu; read -p "..." ;;
-        6) manage_snell_menu; read -p "..." ;;
-        7) enable_bbr; read -p "..." ;;
-        0) exit 0 ;;
-    esac
-done
+main_menu
