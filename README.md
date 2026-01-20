@@ -1,4 +1,4 @@
-# 3-Protocols-Manager (VPS All-in-One)
+# 3-Protocols-Manager
 
 这是一个为 VPS 设计的轻量级、交互式全能管理脚本。它可以同时部署 Reality、Hysteria2 和 Snell v5 三种协议，并实现端口共存，互不干扰。
 
